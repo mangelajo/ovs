@@ -19,8 +19,11 @@
 #include "flow.h"
 #include "lflow.h"
 #include "lport.h"
+#include "lib/bundle.h"
 #include "lib/poll-loop.h"
+#include "lib/uuid.h"
 #include "ofctrl.h"
+#include "openvswitch/list.h"
 #include "openvswitch/hmap.h"
 #include "openvswitch/match.h"
 #include "openvswitch/ofp-actions.h"
@@ -353,8 +356,12 @@ consider_port_binding(enum mf_field_id mff_ovn_geneve,
         return;
     }
 
+    struct ovs_list *redirect_chassis = NULL;
+    redirect_chassis = parse_redirect_chassis(binding);
+
     if (!strcmp(binding->type, "chassisredirect")
-        && binding->chassis == chassis) {
+        && (binding->chassis == chassis ||
+            redirect_chassis_contains(redirect_chassis, chassis))) {
 
         /* Table 33, priority 100.
          * =======================
@@ -413,7 +420,8 @@ consider_port_binding(enum mf_field_id mff_ovn_geneve,
 
         ofctrl_add_flow(flow_table, OFTABLE_LOCAL_OUTPUT, 100, 0,
                         &match, ofpacts_p);
-        return;
+
+        goto out;
     }
 
     /* Find the OpenFlow port for the logical port, as 'ofport'.  This is
@@ -442,7 +450,7 @@ consider_port_binding(enum mf_field_id mff_ovn_geneve,
     bool is_remote = false;
     if (binding->parent_port && *binding->parent_port) {
         if (!binding->tag) {
-            return;
+            goto out;
         }
         ofport = u16_to_ofp(simap_get(&localvif_to_ofport,
                                       binding->parent_port));
@@ -460,27 +468,34 @@ consider_port_binding(enum mf_field_id mff_ovn_geneve,
         }
     }
 
+    bool is_ha_remote = false;
     const struct chassis_tunnel *tun = NULL;
     const struct sbrec_port_binding *localnet_port =
         get_localnet_port(local_datapaths, dp_key);
     if (!ofport) {
         /* It is remote port, may be reached by tunnel or localnet port */
         is_remote = true;
-        if (!binding->chassis) {
-            return;
-        }
         if (localnet_port) {
             ofport = u16_to_ofp(simap_get(&localvif_to_ofport,
                                           localnet_port->logical_port));
             if (!ofport) {
-                return;
+                goto out;
             }
         } else {
-            tun = chassis_tunnel_find(binding->chassis->name);
-            if (!tun) {
-                return;
+            if (!redirect_chassis || ovs_list_is_short(redirect_chassis)) {
+                /* It's on a single remote chassis */
+            	if (!binding->chassis) {
+                    goto out;
+                }
+                tun = chassis_tunnel_find(binding->chassis->name);
+                if (!tun) {
+                    goto out;
+                }
+                ofport = tun->ofport;
+            } else {
+                /* It's distributed across the "redirect_chassis" list */
+                is_ha_remote = true;
             }
-            ofport = tun->ofport;
         }
     }
 
@@ -575,7 +590,7 @@ consider_port_binding(enum mf_field_id mff_ovn_geneve,
         }
         ofctrl_add_flow(flow_table, OFTABLE_LOG_TO_PHY, 100, 0,
                         &match, ofpacts_p);
-    } else if (!tun) {
+    } else if (!tun && !is_ha_remote) {
         /* Remote port connected by localnet port */
         /* Table 33, priority 100.
          * =======================
@@ -598,7 +613,7 @@ consider_port_binding(enum mf_field_id mff_ovn_geneve,
         put_resubmit(OFTABLE_LOCAL_OUTPUT, ofpacts_p);
         ofctrl_add_flow(flow_table, OFTABLE_LOCAL_OUTPUT, 100, 0,
                         &match, ofpacts_p);
-    } else {
+    } else  {
         /* Remote port connected by tunnel */
 
         /* Table 32, priority 100.
@@ -615,13 +630,78 @@ consider_port_binding(enum mf_field_id mff_ovn_geneve,
         match_set_metadata(&match, htonll(dp_key));
         match_set_reg(&match, MFF_LOG_OUTPORT - MFF_REG0, port_key);
 
-        put_encapsulation(mff_ovn_geneve, tun, binding->datapath,
-                          port_key, ofpacts_p);
+        if (!is_ha_remote) {
+            /* Setup encapsulation */
+            put_encapsulation(mff_ovn_geneve, tun, binding->datapath,
+                              port_key, ofpacts_p);
+            /* Output to tunnel. */
+            ofpact_put_OUTPUT(ofpacts_p)->port = ofport;
+        } else {
+            struct redirect_chassis *chassis;
+            /* Make sure all tunnel endpoints use the same encapsulation,
+             * and set it up */
+            LIST_FOR_EACH(chassis, node, redirect_chassis) {
+                if (!tun) {
+                    tun = chassis_tunnel_find(chassis->chassis_id);
+                } else {
+                    struct chassis_tunnel *chassis_tunnel;
+                    chassis_tunnel = chassis_tunnel_find(chassis->chassis_id);
+                    if (chassis_tunnel &&
+                        tun->type != chassis_tunnel->type) {
+                        static struct vlog_rate_limit rl =
+                            VLOG_RATE_LIMIT_INIT(1, 1);
+                        VLOG_ERR_RL(&rl, "Port %s has redirect-chassis with "
+                                         "mixed encapsulations, only uniform "
+                                         "encapsulations are supported.",
+                                    binding->logical_port);
+                        goto out;
+                    }
+                }
+            }
+            if (!tun) {
+                static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1,1);
+                VLOG_ERR_RL(&rl, "No tunnel endpoint found for gateways in "
+                                 "redirect-chassis of port %s",
+                            binding->logical_port);
+                goto out;
+            }
 
-        /* Output to tunnel. */
-        ofpact_put_OUTPUT(ofpacts_p)->port = ofport;
+            put_encapsulation(mff_ovn_geneve, tun, binding->datapath,
+                              port_key, ofpacts_p);
+
+            /* Output to tunnels with active/backup */
+            struct ofpact_bundle *bundle = ofpact_put_BUNDLE(ofpacts_p);
+
+            LIST_FOR_EACH(chassis, node, redirect_chassis) {
+                tun = chassis_tunnel_find(chassis->chassis_id); 
+                if (!tun) {
+                    continue;
+                }
+                if (bundle->n_slaves >= BUNDLE_MAX_SLAVES) {
+                    static struct vlog_rate_limit rl =
+                            VLOG_RATE_LIMIT_INIT(1, 1);
+                    VLOG_WARN_RL(&rl, "Remote endpoints for port beyond "
+                                      "BUNDLE_MAX_SLAVES");
+                    break;
+                }
+                ofpbuf_put(ofpacts_p, &tun->ofport,
+                           sizeof tun->ofport);
+                bundle->n_slaves++;
+            }
+
+            ofpact_finish_BUNDLE(ofpacts_p, &bundle);
+            bundle->algorithm = NX_BD_ALG_ACTIVE_BACKUP;
+            /* Although ACTIVE_BACKUP bundle algorithm seems to ignore
+             * the next two fields, those are always set */
+            bundle->basis = 0;
+            bundle->fields = NX_HASH_FIELDS_ETH_SRC;
+        }
         ofctrl_add_flow(flow_table, OFTABLE_REMOTE_OUTPUT, 100, 0,
                         &match, ofpacts_p);
+    }
+out:
+    if (redirect_chassis) {
+        redirect_chassis_destroy(redirect_chassis);
     }
 }
 

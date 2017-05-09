@@ -17,10 +17,14 @@
 #define OVN_LPORT_H 1
 
 #include <stdint.h>
+#include "lib/uuid.h"
 #include "openvswitch/hmap.h"
+#include "openvswitch/list.h"
 
 struct ovsdb_idl;
+struct sbrec_chassis;
 struct sbrec_datapath_binding;
+struct sbrec_port_binding;
 
 /* Database indexes.
  * =================
@@ -92,5 +96,29 @@ const struct sbrec_multicast_group *mcgroup_lookup_by_dp_name(
     const struct mcgroup_index *,
     const struct sbrec_datapath_binding *,
     const char *name);
+
+
+/* Redirect chassis parsing
+ * ========================
+ *
+ * The following structure and methods allow parsing the redirect-chassis
+ * option on chassisredirect ports. A parsed list will always be in order
+ * of priority. */
+
+struct redirect_chassis {
+    struct ovs_list node;
+    char chassis_id[UUID_LEN+1];
+    int prio;
+};
+
+struct ovs_list* parse_redirect_chassis(
+        const struct sbrec_port_binding *binding);
+bool redirect_chassis_contains(struct ovs_list *redirect_chassis,
+                               const struct sbrec_chassis *chassis);
+void redirect_chassis_destroy(struct ovs_list *list);
+
+bool pb_redirect_chassis_contains(
+        const struct sbrec_port_binding *binding,
+        const struct sbrec_chassis *chassis);
 
 #endif /* ovn/lport.h */

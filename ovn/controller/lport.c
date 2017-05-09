@@ -237,3 +237,119 @@ mcgroup_lookup_by_dp_name(const struct mcgroup_index *mcgroups,
     }
     return NULL;
 }
+
+
+/* redirect-chassis option parsing
+ */
+static int
+compare_chassis_prio_(const void *a_, const void *b_)
+{
+    const struct redirect_chassis *chassis_a = a_;
+    const struct redirect_chassis *chassis_b = b_;
+    int prio_diff = chassis_b->prio - chassis_a->prio;
+    if (!prio_diff) {
+        return strcmp(chassis_a->chassis_id, chassis_b->chassis_id);
+    }
+    return prio_diff;
+}
+
+struct ovs_list*
+parse_redirect_chassis(const struct sbrec_port_binding *binding)
+{
+
+    const char *redir_chassis_const;
+    char *redir_chassis_str;
+    char *save_ptr1 = NULL;
+    char *chassis_prio;
+
+    struct redirect_chassis *redirect_chassis =
+        xmalloc(sizeof *redirect_chassis);
+
+    int n=0;
+
+    redir_chassis_const = smap_get(&binding->options, "redirect-chassis");
+
+    if (!redir_chassis_const) {
+        free(redirect_chassis);
+        return NULL;
+    }
+
+    redir_chassis_str = strdup(redir_chassis_const);
+
+    for (chassis_prio = strtok_r(redir_chassis_str, ", ", &save_ptr1);
+         chassis_prio; chassis_prio = strtok_r(NULL, ", ", &save_ptr1)) {
+
+        char *save_ptr2 = NULL;
+        char *chassis_name = strtok_r(chassis_prio, ":", &save_ptr2);
+        char *prio = strtok_r(NULL, ":", &save_ptr2);
+
+        if (strlen(chassis_name) > UUID_LEN) {
+            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 1);
+            VLOG_WARN_RL(&rl, "chassis name (%s) in redirect-chassis option "
+                              "of logical port %s is too long, ignoring.",
+                              chassis_name, binding->logical_port);
+            continue;
+        }
+
+        strncpy(redirect_chassis[n].chassis_id, chassis_name, UUID_LEN);
+
+        /* chassis with no priority get lowest priority: 0 */
+        redirect_chassis[n].prio = prio ? atoi(prio):0;
+
+	    redirect_chassis = xrealloc(redirect_chassis,
+				                    sizeof *redirect_chassis * (++n + 1));
+    }
+
+    free(redir_chassis_str);
+
+    qsort(redirect_chassis, n, sizeof *redirect_chassis,
+          compare_chassis_prio_);
+
+    struct ovs_list *list = NULL;
+    if (n) {
+        list = xmalloc(sizeof *list);
+        ovs_list_init(list);
+
+        int i;
+        for (i=0; i<n; i++) {
+            ovs_list_push_back(list, &redirect_chassis[i].node);
+        }
+    }
+
+    return list;
+}
+
+bool
+redirect_chassis_contains(struct ovs_list *redirect_chassis,
+                          const struct sbrec_chassis *chassis) {
+    struct redirect_chassis *chassis_item;
+    if (redirect_chassis) {
+        LIST_FOR_EACH(chassis_item, node, redirect_chassis) {
+            if (!strcmp(chassis_item->chassis_id, chassis->name)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void
+redirect_chassis_destroy(struct ovs_list *list)
+{
+    if (!list) {
+        return;
+    }
+    free(ovs_list_front(list));
+    free(list);
+}
+
+bool
+pb_redirect_chassis_contains(const struct sbrec_port_binding *binding,
+                             const struct sbrec_chassis *chassis)
+{
+    bool contained;
+    struct ovs_list *redirect_chassis = parse_redirect_chassis(binding);
+    contained = redirect_chassis_contains(redirect_chassis, chassis);
+    redirect_chassis_destroy(redirect_chassis);
+    return contained;
+}

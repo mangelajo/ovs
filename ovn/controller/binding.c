@@ -391,12 +391,13 @@ consider_local_datapath(struct controller_ctx *ctx,
                                false, local_datapaths);
         }
     } else if (!strcmp(binding_rec->type, "chassisredirect")) {
-        const char *chassis_id = smap_get(&binding_rec->options,
-                                          "redirect-chassis");
-        our_chassis = chassis_id && !strcmp(chassis_id, chassis_rec->name);
-        if (our_chassis) {
+        if (pb_redirect_chassis_contains(binding_rec, chassis_rec)) {
             add_local_datapath(ldatapaths, lports, binding_rec->datapath,
                                false, local_datapaths);
+            // XXX this should only be set to true if our chassis
+            // (chassis_rec) is the master for this chassisredirect port
+            // but for now we'll bind it only when not bound
+            our_chassis = !binding_rec->chassis; 
         }
     } else if (!strcmp(binding_rec->type, "l3gateway")) {
         const char *chassis_id = smap_get(&binding_rec->options,

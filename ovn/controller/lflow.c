@@ -96,7 +96,11 @@ is_chassis_resident_cb(const void *c_aux_, const char *port_name)
 
     const struct sbrec_port_binding *pb
         = lport_lookup_by_name(c_aux->lports, port_name);
-    return pb && pb->chassis && pb->chassis == c_aux->chassis;
+    if (pb && pb->chassis && pb->chassis == c_aux->chassis) {
+        return true;
+    } else {
+        return pb_redirect_chassis_contains(pb, c_aux->chassis);
+    }
 }
 
 static bool
