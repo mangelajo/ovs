@@ -1303,6 +1303,7 @@ send_garp_update(const struct sbrec_port_binding *binding_rec,
      * port bindings with type "patch" for logical switch ports attached to
      * distributed gateway ports. */
     if (!strcmp(binding_rec->type, "l3gateway")
+        || !strcmp(binding_rec->type, "redirectchassis")
         || !strcmp(binding_rec->type, "patch")) {
         struct lport_addresses *laddrs = NULL;
         while ((laddrs = shash_find_and_delete(nat_addresses,
@@ -1460,9 +1461,9 @@ get_localnet_vifs_l3gwports(const struct ovsrec_bridge *br_int,
 
     const struct local_datapath *ld;
     HMAP_FOR_EACH (ld, hmap_node, local_datapaths) {
-        if (!ld->localnet_port) {
+        /*if (!ld->localnet_port) {
             continue;
-        }
+        }*/
 
         /* Get l3gw ports.  Consider port bindings with type "l3gateway"
          * that connect to gateway routers (if local), and consider port
@@ -1472,6 +1473,9 @@ get_localnet_vifs_l3gwports(const struct ovsrec_bridge *br_int,
             const struct sbrec_port_binding *pb = ld->ldatapath->lports[i];
             if ((ld->has_local_l3gateway && !strcmp(pb->type, "l3gateway"))
                 || !strcmp(pb->type, "patch")) {
+                sset_add(local_l3gw_ports, pb->logical_port);
+            }
+            if (ld->has_local_redirectchassis && !strcmp(pb->type, "redirectchassis")) {
                 sset_add(local_l3gw_ports, pb->logical_port);
             }
         }

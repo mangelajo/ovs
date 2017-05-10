@@ -399,6 +399,11 @@ consider_port_binding(enum mf_field_id mff_ovn_geneve,
                          binding->logical_port,
                          distributed_port);
         } else {
+            if(binding->chassis != chassis) {
+                ofctrl_add_flow(flow_table, OFTABLE_LOCAL_OUTPUT, 100, 0,
+                        &match, ofpacts_p);
+                    goto out;
+            }
             put_load(distributed_binding->tunnel_key,
                      MFF_LOG_OUTPORT, 0, 32, ofpacts_p);
 
