@@ -25,6 +25,8 @@ struct ovsdb_idl;
 struct sbrec_chassis;
 struct sbrec_datapath_binding;
 struct sbrec_port_binding;
+struct sset;
+
 
 /* Database indexes.
  * =================
@@ -120,5 +122,8 @@ void redirect_chassis_destroy(struct ovs_list *list);
 bool pb_redirect_chassis_contains(
         const struct sbrec_port_binding *binding,
         const struct sbrec_chassis *chassis);
-
+bool redirect_chassis_is_active(
+        const struct ovs_list *redirect_chassis,
+        const struct sbrec_chassis *local_chassis,
+        const struct sset *active_tunnels);
 #endif /* ovn/lport.h */

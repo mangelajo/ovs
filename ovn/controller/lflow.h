@@ -42,6 +42,7 @@ struct lport_index;
 struct mcgroup_index;
 struct sbrec_chassis;
 struct simap;
+struct sset;
 struct uuid;
 
 /* OpenFlow table numbers.
@@ -69,7 +70,8 @@ void lflow_run(struct controller_ctx *,
                const struct hmap *local_datapaths,
                struct group_table *group_table,
                const struct shash *addr_sets,
-               struct hmap *flow_table);
+               struct hmap *flow_table,
+               struct sset *active_tunnels);
 void lflow_destroy(void);
 
 #endif /* ovn/lflow.h */

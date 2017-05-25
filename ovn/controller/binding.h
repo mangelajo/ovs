@@ -32,7 +32,7 @@ void binding_register_ovs_idl(struct ovsdb_idl *);
 void binding_run(struct controller_ctx *, const struct ovsrec_bridge *br_int,
                  const struct sbrec_chassis *, const struct ldatapath_index *,
                  const struct lport_index *, struct hmap *local_datapaths,
-                 struct sset *all_lports);
+                 struct sset *all_lports, struct sset *active_tunnels);
 void bfd_run(struct controller_ctx *ctx, const struct ovsrec_bridge *br_int,
              const struct sbrec_chassis *chassis_rec,
              struct hmap *local_datapaths);

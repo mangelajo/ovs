@@ -53,6 +53,7 @@ struct lookup_port_aux {
 struct condition_aux {
     const struct lport_index *lports;
     const struct sbrec_chassis *chassis;
+    const struct sset *active_tunnels;
 };
 
 static void consider_logical_flow(const struct lport_index *lports,
@@ -65,7 +66,8 @@ static void consider_logical_flow(const struct lport_index *lports,
                                   struct hmap *dhcpv6_opts,
                                   uint32_t *conj_id_ofs,
                                   const struct shash *addr_sets,
-                                  struct hmap *flow_table);
+                                  struct hmap *flow_table,
+                                  struct sset *active_tunnels);
 
 static bool
 lookup_port_cb(const void *aux_, const char *port_name, unsigned int *portp)
@@ -96,10 +98,23 @@ is_chassis_resident_cb(const void *c_aux_, const char *port_name)
 
     const struct sbrec_port_binding *pb
         = lport_lookup_by_name(c_aux->lports, port_name);
-    if (pb && pb->chassis && pb->chassis == c_aux->chassis) {
-        return true;
+    if (!pb) return false;
+    if (strcmp(pb->type, "chassisredirect")) {
+        /* for non-chassisredirect ports */
+        return pb->chassis && pb->chassis == c_aux->chassis;
     } else {
-        return pb_redirect_chassis_contains(pb, c_aux->chassis);
+        struct ovs_list *redirect_chassis;
+        redirect_chassis = parse_redirect_chassis(pb);
+        if (redirect_chassis) {
+            bool active = redirect_chassis_is_active(redirect_chassis,
+                                                     c_aux->chassis,
+                                                     c_aux->active_tunnels);
+            redirect_chassis_destroy(redirect_chassis);
+            VLOG_WARN("is_chassis_resident(%s)=>%d", port_name, active);
+
+            return active;
+        }
+        return false;
     }
 }
 
@@ -127,7 +142,8 @@ add_logical_flows(struct controller_ctx *ctx, const struct lport_index *lports,
                   struct group_table *group_table,
                   const struct sbrec_chassis *chassis,
                   const struct shash *addr_sets,
-                  struct hmap *flow_table)
+                  struct hmap *flow_table,
+                  struct sset *active_tunnels)
 {
     uint32_t conj_id_ofs = 1;
     const struct sbrec_logical_flow *lflow;
@@ -151,7 +167,7 @@ add_logical_flows(struct controller_ctx *ctx, const struct lport_index *lports,
         consider_logical_flow(lports, mcgroups, lflow, local_datapaths,
                               group_table, chassis,
                               &dhcp_opts, &dhcpv6_opts, &conj_id_ofs,
-                              addr_sets, flow_table);
+                              addr_sets, flow_table, active_tunnels);
     }
 
     dhcp_opts_destroy(&dhcp_opts);
@@ -169,7 +185,8 @@ consider_logical_flow(const struct lport_index *lports,
                       struct hmap *dhcpv6_opts,
                       uint32_t *conj_id_ofs,
                       const struct shash *addr_sets,
-                      struct hmap *flow_table)
+                      struct hmap *flow_table,
+                      struct sset *active_tunnels)
 {
     /* Determine translation of logical table IDs to physical table IDs. */
     bool ingress = !strcmp(lflow->pipeline, "ingress");
@@ -266,7 +283,7 @@ consider_logical_flow(const struct lport_index *lports,
         return;
     }
 
-    struct condition_aux cond_aux = { lports, chassis };
+    struct condition_aux cond_aux = { lports, chassis, active_tunnels};
     expr = expr_simplify(expr, is_chassis_resident_cb, &cond_aux);
     expr = expr_normalize(expr);
     uint32_t n_conjs = expr_to_matches(expr, lookup_port_cb, &aux,
@@ -395,10 +412,11 @@ lflow_run(struct controller_ctx *ctx,
           const struct hmap *local_datapaths,
           struct group_table *group_table,
           const struct shash *addr_sets,
-          struct hmap *flow_table)
+          struct hmap *flow_table,
+          struct sset *active_tunnels)
 {
     add_logical_flows(ctx, lports, mcgroups, local_datapaths, group_table,
-                      chassis, addr_sets, flow_table);
+                      chassis, addr_sets, flow_table, active_tunnels);
     add_neighbor_flows(ctx, lports, flow_table);
 }
 

@@ -15,11 +15,11 @@
 
 #include <config.h>
 
+#include "lib/sset.h"
 #include "lport.h"
 #include "hash.h"
 #include "openvswitch/vlog.h"
 #include "ovn/lib/ovn-sb-idl.h"
-
 VLOG_DEFINE_THIS_MODULE(lport);
 
 static struct ldatapath *ldatapath_lookup_by_key__(
@@ -291,7 +291,7 @@ parse_redirect_chassis(const struct sbrec_port_binding *binding)
             continue;
         }
 
-        strncpy(redirect_chassis[n].chassis_id, chassis_name, UUID_LEN);
+        strcpy(redirect_chassis[n].chassis_id, chassis_name);
 
         /* chassis with no priority get lowest priority: 0 */
         redirect_chassis[n].prio = prio ? atoi(prio):0;
@@ -352,4 +352,42 @@ pb_redirect_chassis_contains(const struct sbrec_port_binding *binding,
     contained = redirect_chassis_contains(redirect_chassis, chassis);
     redirect_chassis_destroy(redirect_chassis);
     return contained;
+}
+
+bool
+redirect_chassis_is_active(const struct ovs_list *redirect_chassis,
+                           const struct sbrec_chassis *local_chassis,
+                           const struct sset *active_tunnels)
+{
+    struct redirect_chassis *rc;
+
+    /* if there's only one chassis, it's not HA and it's the equivalent
+     * of being active */
+    if(ovs_list_is_short(redirect_chassis)) {
+        return true;
+    }
+
+    /* if there are no other tunnels active, we assume that the
+     * connection providing tunneling is down, hence we're down */
+    if(sset_is_empty(active_tunnels)) {
+        return false;
+    }
+
+    /* redirect_chassis is an ordered list, by priority, of chassis
+     * hosting the redirect of the port */
+    LIST_FOR_EACH(rc, node, redirect_chassis) {
+        /* if we found the chassis on the list, and we didn't exit before
+         * on the active_tunnels check for other higher priority chassis
+         * being active, then this chassis is master.
+         * This will also be true for single-chassis (non-HA) redirects */
+        if(!strcmp(rc->chassis_id, local_chassis->name)) {
+            return true;
+        }
+        /* if we find this specific chassis on the list to have an active
+         * tunnel, then 'local_chassis' is not master */
+        if(sset_contains(active_tunnels, rc->chassis_id)) {
+            return false;
+        }
+    }
+    return false;
 }

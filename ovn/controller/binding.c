@@ -423,17 +423,8 @@ consider_local_datapath(struct controller_ctx *ctx,
 
         if(redirect_chassis &&
            redirect_chassis_contains(redirect_chassis, chassis_rec)) {
-            struct redirect_chassis *rc;
-            LIST_FOR_EACH(rc, node, redirect_chassis) {
-                if(!strcmp(rc->chassis_id, chassis_rec->name)) {
-                    /* sb_rec_port_binding->chassis should reflect master */
-                    our_chassis = true;
-                    break;
-                }
-                if(sset_contains(active_tunnels, rc->chassis_id)) {
-                    break;
-                }
-            }
+            our_chassis = redirect_chassis_is_active(
+                    redirect_chassis, chassis_rec, active_tunnels);
             add_local_datapath(ldatapaths, lports, binding_rec->datapath,
                                false, local_datapaths, our_chassis);
         }
@@ -484,7 +475,7 @@ binding_run(struct controller_ctx *ctx, const struct ovsrec_bridge *br_int,
             const struct sbrec_chassis *chassis_rec,
             const struct ldatapath_index *ldatapaths,
             const struct lport_index *lports, struct hmap *local_datapaths,
-            struct sset *local_lports)
+            struct sset *local_lports, struct sset *active_tunnels)
 {
     if (!chassis_rec) {
         return;
@@ -493,13 +484,12 @@ binding_run(struct controller_ctx *ctx, const struct ovsrec_bridge *br_int,
     const struct sbrec_port_binding *binding_rec;
     struct shash lport_to_iface = SHASH_INITIALIZER(&lport_to_iface);
     struct sset egress_ifaces = SSET_INITIALIZER(&egress_ifaces);
-    struct sset active_tunnels = SSET_INITIALIZER(&active_tunnels);
     struct hmap qos_map;
 
     hmap_init(&qos_map);
     if (br_int) {
         get_local_iface_ids(br_int, &lport_to_iface, local_lports,
-                            &egress_ifaces, &active_tunnels);
+                            &egress_ifaces, active_tunnels);
     }
 
     /* Run through each binding record to see if it is resident on this
@@ -510,7 +500,7 @@ binding_run(struct controller_ctx *ctx, const struct ovsrec_bridge *br_int,
                                 chassis_rec, binding_rec,
                                 sset_is_empty(&egress_ifaces) ? NULL :
                                 &qos_map, local_datapaths, &lport_to_iface,
-                                local_lports, &active_tunnels);
+                                local_lports, active_tunnels);
 
     }
     if (!sset_is_empty(&egress_ifaces)
@@ -523,7 +513,6 @@ binding_run(struct controller_ctx *ctx, const struct ovsrec_bridge *br_int,
 
     shash_destroy(&lport_to_iface);
     sset_destroy(&egress_ifaces);
-    sset_destroy(&active_tunnels);
     hmap_destroy(&qos_map);
 }
 
