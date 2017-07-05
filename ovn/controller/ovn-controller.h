@@ -23,6 +23,8 @@
 /* Linux supports a maximum of 64K zones, which seems like a fine default. */
 #define MAX_CT_ZONES 65535
 
+struct sset;
+
 struct controller_ctx {
     struct ovsdb_idl *ovnsb_idl;
     struct ovsdb_idl_txn *ovnsb_idl_txn;
@@ -66,6 +68,8 @@ struct local_datapath {
     /* True if this datapath contains an l3gateway port located on this
      * hypervisor. */
     bool has_local_l3gateway;
+    const struct ldatapath **peer_dps;
+    size_t n_peer_dps;
 };
 
 struct local_datapath *get_local_datapath(const struct hmap *,
