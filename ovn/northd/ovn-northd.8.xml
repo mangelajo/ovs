@@ -2013,6 +2013,16 @@ next;
       </li>
 
       <li>
+        A priority-100 logical flow with match
+        <code>inport == <var>GW</var> &amp;&amp;
+        flags.rcv_from_vlan == 1</code> has actions
+        <code>eth.dst = <var>E</var>; next;</code>, where
+        <var>GW</var> is the logical router distributed gateway
+        port and <var>E</var> is the MAC address of router
+        distributed gateway port.
+      </li>
+
+      <li>
         For each NAT rule in the OVN Northbound database that can
         be handled in a distributed manner, a priority-100 logical
         flow with match <code>ip4.src == <var>B</var> &amp;&amp;

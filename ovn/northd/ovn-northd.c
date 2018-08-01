@@ -4627,6 +4627,15 @@ add_route(struct hmap *lflows, const struct ovn_port *op,
     } else {
         ds_put_format(&actions, "ip%s.dst", is_ipv4 ? "4" : "6");
     }
+
+    if (op->peer && op->peer->od->localnet_port &&
+        op->od->l3dgw_port && op->od->l3redirect_port &&
+        (op != op->od->l3redirect_port) &&
+        (op != op->od->l3dgw_port)) {
+        ds_put_format(&match, " && is_chassis_resident(%s)",
+                      op->od->l3redirect_port->json_key);
+        ds_put_format(&actions, "; flags.rcv_from_vlan = 1");
+    }
     ds_put_format(&actions, "; "
                   "%sreg1 = %s; "
                   "eth.src = %s; "
@@ -6338,6 +6347,26 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
             add_route(lflows, op, op->lrp_networks.ipv6_addrs[i].addr_s,
                       op->lrp_networks.ipv6_addrs[i].network_s,
                       op->lrp_networks.ipv6_addrs[i].plen, NULL, NULL);
+        }
+
+        /* For a reply packet from gateway with VLAN switch port as
+         * destination, replace router internal port MAC with router gateway
+         * MAC address, so that external switches can learn gateway MAC
+         * address. Later before delivering the packet to the port,
+         * controller will replace the gateway MAC with router internal port
+         * MAC in table 33. */
+        if (op->od->l3dgw_port && (op == op->od->l3dgw_port) &&
+            op->od->l3redirect_port) {
+            ds_clear(&actions);
+            ds_clear(&match);
+            ds_put_format(&match, "inport == %s", op->json_key);
+            ds_put_format(&match, " && flags.rcv_from_vlan == 1");
+            ds_put_format(&match, " && is_chassis_resident(%s)",
+                          op->od->l3redirect_port->json_key);
+            ds_put_format(&actions,
+                          "eth.src = %s; next;", op->lrp_networks.ea_s);
+            ovn_lflow_add(lflows, op->od, S_ROUTER_IN_GW_REDIRECT, 100,
+                          ds_cstr(&match), ds_cstr(&actions));
         }
     }
 

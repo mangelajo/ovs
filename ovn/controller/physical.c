@@ -190,7 +190,9 @@ get_zone_ids(const struct sbrec_port_binding *binding,
 static void
 put_local_common_flows(uint32_t dp_key, uint32_t port_key,
                        bool nested_container, const struct zone_ids *zone_ids,
-                       struct ofpbuf *ofpacts_p, struct hmap *flow_table)
+                       struct ofpbuf *ofpacts_p, struct hmap *flow_table,
+                       struct local_datapath *ld,
+                       const struct hmap *local_datapaths)
 {
     struct match match;
 
@@ -221,10 +223,62 @@ put_local_common_flows(uint32_t dp_key, uint32_t port_key,
         }
     }
 
+    struct ofpbuf *clone = NULL;
+    clone = ofpbuf_clone(ofpacts_p);
+
     /* Resubmit to table 34. */
     put_resubmit(OFTABLE_CHECK_LOOPBACK, ofpacts_p);
     ofctrl_add_flow(flow_table, OFTABLE_LOCAL_OUTPUT, 100, 0,
                     &match, ofpacts_p);
+
+    /* For a reply packet from gateway with VLAN switch port as destination
+     * (excluding localnet_port and external VLAN networks), gateway router
+     * will use gateway MAC address as source MAC instead of router internal
+     * port MAC, so that external switches can learn gateway MAC address.
+     * Here (before packet is given to the port) we replace router gateway
+     * MAC address with router internal port MAC. */
+    if (ld->localnet_port && (port_key != ld->localnet_port->tunnel_key)) {
+        for (int i = 0; i < ld->n_peer_dps; i++) {
+            struct local_datapath *peer_ldp = get_local_datapath(
+                local_datapaths, ld->peer_dps[i]->peer_dp->tunnel_key);
+            const struct sbrec_port_binding *crp;
+            crp = peer_ldp->chassisredirect_port;
+            if (!crp) {
+                continue;
+            }
+
+            if (strcmp(smap_get(&crp->options, "distributed-port"),
+                       ld->peer_dps[i]->peer->logical_port) &&
+                (port_key != ld->peer_dps[i]->patch->tunnel_key)) {
+                for (int j = 0; j < crp->n_mac; j++) {
+                    struct lport_addresses laddrs;
+                    if (!extract_lsp_addresses(crp->mac[j], &laddrs)) {
+                        continue;
+                    }
+                    match_set_dl_src(&match, laddrs.ea);
+                    destroy_lport_addresses(&laddrs);
+                    break;
+                }
+                for (int j = 0; j < ld->peer_dps[i]->peer->n_mac; j++) {
+                    struct lport_addresses laddrs;
+                    uint64_t mac64;
+                    if (!extract_lsp_addresses(
+                        ld->peer_dps[i]->peer->mac[j], &laddrs)) {
+                        continue;
+                    }
+                    mac64 = eth_addr_to_uint64(laddrs.ea);
+                    put_load(mac64,
+                             MFF_ETH_SRC, 0, 48, clone);
+                    destroy_lport_addresses(&laddrs);
+                    break;
+                }
+                put_resubmit(OFTABLE_CHECK_LOOPBACK, clone);
+                ofctrl_add_flow(flow_table, OFTABLE_LOCAL_OUTPUT, 150, 0,
+                    &match, clone);
+            }
+        }
+    }
+    ofpbuf_delete(clone);
 
     /* Table 34, Priority 100.
      * =======================
@@ -330,7 +384,7 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_chassis_by_name,
 
         struct zone_ids binding_zones = get_zone_ids(binding, ct_zones);
         put_local_common_flows(dp_key, port_key, false, &binding_zones,
-                               ofpacts_p, flow_table);
+                               ofpacts_p, flow_table, ld, local_datapaths);
 
         match_init_catchall(&match);
         ofpbuf_clear(ofpacts_p);
@@ -531,7 +585,7 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_chassis_by_name,
 
         struct zone_ids zone_ids = get_zone_ids(binding, ct_zones);
         put_local_common_flows(dp_key, port_key, nested_container, &zone_ids,
-                               ofpacts_p, flow_table);
+                               ofpacts_p, flow_table, ld, local_datapaths);
 
         /* Table 0, Priority 200, 150 and 100.
          * ==============================

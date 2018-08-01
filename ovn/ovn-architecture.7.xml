@@ -1067,7 +1067,9 @@
 
       <p>
         Flows in table 33 resemble those in table 32 but for logical ports that
-        reside locally rather than remotely.  For unicast logical output ports
+        reside locally rather than remotely.  If these are VLAN ports and
+        packet has router gateway port MAC address as source, replace it with
+        router internal port MAC address. For unicast logical output ports
         on the local hypervisor, the actions just resubmit to table 34.  For
         multicast output ports that include one or more logical ports on the
         local hypervisor, for each such logical port <var>P</var>, the actions
