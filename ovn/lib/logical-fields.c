@@ -105,6 +105,10 @@ ovn_init_symtab(struct shash *symtab)
              MLF_FORCE_SNAT_FOR_LB_BIT);
     expr_symtab_add_subfield(symtab, "flags.force_snat_for_lb", NULL,
                              flags_str);
+    snprintf(flags_str, sizeof flags_str, "flags[%d]",
+             MLF_RCV_FROM_VLAN_BIT);
+    expr_symtab_add_subfield(symtab, "flags.rcv_from_vlan", NULL,
+                             flags_str);
 
     /* Connection tracking state. */
     expr_symtab_add_field(symtab, "ct_mark", MFF_CT_MARK, NULL, false);

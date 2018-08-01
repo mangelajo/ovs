@@ -145,10 +145,14 @@ add_local_datapath__(struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
     const struct sbrec_port_binding *pb;
     SBREC_PORT_BINDING_FOR_EACH_EQUAL (pb, target,
                                        sbrec_port_binding_by_datapath) {
+        if (!strcmp(pb->type, "chassisredirect")) {
+            ld->chassisredirect_port = pb;
+        }
         if (!strcmp(pb->type, "patch")) {
             const char *peer_name = smap_get(&pb->options, "peer");
             if (peer_name) {
                 const struct sbrec_port_binding *peer;
+                struct peer_datapath *pdp;
 
                 peer = lport_lookup_by_name(sbrec_port_binding_by_name,
                                             peer_name);
@@ -163,9 +167,13 @@ add_local_datapath__(struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
                     ld->peer_dps = xrealloc(
                             ld->peer_dps,
                             ld->n_peer_dps * sizeof *ld->peer_dps);
-                    ld->peer_dps[ld->n_peer_dps - 1] = datapath_lookup_by_key(
+                    pdp = xmalloc(sizeof(struct peer_datapath));
+                    pdp->peer_dp = datapath_lookup_by_key(
                         sbrec_datapath_binding_by_key,
                         peer->datapath->tunnel_key);
+                    pdp->patch = pb;
+                    pdp->peer = peer;
+                    ld->peer_dps[ld->n_peer_dps - 1] = pdp;
                 }
             }
         }

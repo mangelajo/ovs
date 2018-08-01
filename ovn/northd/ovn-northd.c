@@ -4642,6 +4642,28 @@ add_route(struct hmap *lflows, const struct ovn_port *op,
      * routing. */
     ovn_lflow_add(lflows, op->od, S_ROUTER_IN_IP_ROUTING, priority,
                   ds_cstr(&match), ds_cstr(&actions));
+
+    /* When output port is distributed gateway port, check if the router
+     * input port is a patch port connected to vlan network.
+     * Traffic from VLAN network to external network should be redirected
+     * to "redirect-chassis" by setting REGBIT_NAT_REDIRECT flag.
+     * Later physical table 32 will output this traffic to gateway
+     * chassis using input network vlan tag */
+    if ((op == op->od->l3dgw_port) && op->od->l3redirect_port) {
+        ds_clear(&match);
+        ds_clear(&actions);
+
+        ds_put_format(&match, "ip%s.%s == %s/%d", is_ipv4 ? "4" : "6",
+                      dir, network_s, plen);
+        ds_put_format(&match, " && flags.rcv_from_vlan == 1");
+        ds_put_format(&match, " && !is_chassis_resident(%s)",
+                      op->od->l3redirect_port->json_key);
+
+        ovn_lflow_add(lflows, op->od, S_ROUTER_IN_IP_ROUTING,
+                      priority + 1, ds_cstr(&match),
+                      REGBIT_NAT_REDIRECT" = 1; next;");
+    }
+
     ds_destroy(&match);
     ds_destroy(&actions);
 }
@@ -5060,6 +5082,19 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
         }
         ovn_lflow_add(lflows, op->od, S_ROUTER_IN_ADMISSION, 50,
                       ds_cstr(&match), "next;");
+
+        /* VLAN traffic from localnet port should be allowed for
+         * router processing on the "redirect-chassis". */
+        if (op->od->l3dgw_port && op->od->l3redirect_port && op->peer &&
+            op->peer->od->localnet_port && (op != op->od->l3dgw_port)) {
+            ds_clear(&match);
+            ds_put_format(&match, "flags.rcv_from_vlan == 1");
+            ds_put_format(&match, " && inport == %s", op->json_key);
+            ds_put_format(&match, " && is_chassis_resident(%s)",
+                          op->od->l3redirect_port->json_key);
+            ovn_lflow_add(lflows, op->od, S_ROUTER_IN_ADMISSION, 100,
+                          ds_cstr(&match), "next;");
+        }
     }
 
     /* Logical router ingress table 1: IP Input. */

@@ -836,6 +836,9 @@ main(int argc, char *argv[])
 
         struct local_datapath *cur_node, *next_node;
         HMAP_FOR_EACH_SAFE (cur_node, next_node, hmap_node, &local_datapaths) {
+            for (int i = 0; i < cur_node->n_peer_dps; i++) {
+                free(cur_node->peer_dps[i]);
+            }
             free(cur_node->peer_dps);
             hmap_remove(&local_datapaths, &cur_node->hmap_node);
             free(cur_node);

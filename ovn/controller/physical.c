@@ -304,7 +304,8 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_chassis_by_name,
 {
     uint32_t dp_key = binding->datapath->tunnel_key;
     uint32_t port_key = binding->tunnel_key;
-    if (!get_local_datapath(local_datapaths, dp_key)) {
+    struct local_datapath *ld = get_local_datapath(local_datapaths, dp_key);
+    if (!ld) {
         return;
     }
 
@@ -350,6 +351,12 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_chassis_by_name,
             put_load(0, MFF_LOG_REG0 + i, 0, 32, ofpacts_p);
         }
         put_load(0, MFF_IN_PORT, 0, 16, ofpacts_p);
+
+        /* Set MLF_RCV_FROM_VLAN flag for vlan network */
+        if (ld->localnet_port && ld->localnet_port->n_tag &&
+            *ld->localnet_port->tag) {
+            put_load(1, MFF_LOG_FLAGS, MLF_RCV_FROM_VLAN_BIT, 1, ofpacts_p);
+        }
         put_resubmit(OFTABLE_LOG_INGRESS_PIPELINE, ofpacts_p);
         clone = ofpbuf_at_assert(ofpacts_p, clone_ofs, sizeof *clone);
         ofpacts_p->header = clone;
@@ -526,8 +533,14 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_chassis_by_name,
         put_local_common_flows(dp_key, port_key, nested_container, &zone_ids,
                                ofpacts_p, flow_table);
 
-        /* Table 0, Priority 150 and 100.
+        /* Table 0, Priority 200, 150 and 100.
          * ==============================
+         *
+         * Priority 200 is for vlan traffic with distributed gateway port MAC
+         * as destination MAC address. For such traffic, set MLF_RCV_FROM_VLAN
+         * flag, MFF_LOG_DATAPATH to the router metadata and MFF_LOG_INPORT to
+         * the patch port connecting router and vlan network and resubmit into
+         * the logical router ingress pipeline.
          *
          * Priority 150 is for tagged traffic. This may be containers in a
          * VM or a VLAN on a local network. For such traffic, match on the
@@ -540,6 +553,57 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_chassis_by_name,
          * input port, MFF_LOG_DATAPATH to the logical datapath, and
          * resubmit into the logical ingress pipeline starting at table
          * 16. */
+
+        /* For packet from vlan network with distributed gateway port MAC as
+         * destination MAC address, submit it to router ingress pipeline */
+        int vlan_tag = binding->n_tag ? *binding->tag : 0;
+        if (!strcmp(binding->type, "localnet") && vlan_tag) {
+            for (int i = 0; i < ld->n_peer_dps; i++) {
+                struct local_datapath *peer_ldp = get_local_datapath(
+                    local_datapaths, ld->peer_dps[i]->peer_dp->tunnel_key);
+                ovs_assert(peer_ldp);
+                const struct sbrec_port_binding *crp;
+                crp = peer_ldp->chassisredirect_port;
+                if (crp && crp->chassis &&
+                   !strcmp(crp->chassis->name, chassis->name)) {
+                    const char *gwp = smap_get(&crp->options,
+                                               "distributed-port");
+                    if (strcmp(gwp, ld->peer_dps[i]->peer->logical_port)) {
+                        bool mac_found = 0;
+                        ofpbuf_clear(ofpacts_p);
+                        match_init_catchall(&match);
+
+                        match_set_in_port(&match, ofport);
+                        match_set_dl_vlan(&match, htons(vlan_tag), 0);
+                        for (int j = 0; j < crp->n_mac; j++) {
+                            struct lport_addresses laddrs;
+                            if (!extract_lsp_addresses(crp->mac[j], &laddrs)) {
+                                continue;
+                            }
+                            match_set_dl_dst(&match, laddrs.ea);
+                            destroy_lport_addresses(&laddrs);
+                            mac_found = 1;
+                            break;
+                        }
+                        if (!mac_found) {
+                            continue;
+                        }
+                        ofpact_put_STRIP_VLAN(ofpacts_p);
+                        put_load(peer_ldp->datapath->tunnel_key,
+                                 MFF_LOG_DATAPATH, 0, 64, ofpacts_p);
+                        put_load(ld->peer_dps[i]->peer->tunnel_key,
+                                 MFF_LOG_INPORT, 0, 32, ofpacts_p);
+                        put_load(1, MFF_LOG_FLAGS,
+                                 MLF_RCV_FROM_VLAN_BIT, 1, ofpacts_p);
+                        put_resubmit(OFTABLE_LOG_INGRESS_PIPELINE, ofpacts_p);
+
+                        ofctrl_add_flow(flow_table, OFTABLE_PHY_TO_LOG,
+                                        200, 0, &match, ofpacts_p);
+                    }
+                }
+            }
+        }
+
         ofpbuf_clear(ofpacts_p);
         match_init_catchall(&match);
         match_set_in_port(&match, ofport);
@@ -633,13 +697,59 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_chassis_by_name,
     } else {
         /* Remote port connected by tunnel */
 
-        /* Table 32, priority 100.
-         * =======================
+        /* Table 32, priority 150 and 100.
+         * ==============================
          *
          * Handles traffic that needs to be sent to a remote hypervisor.  Each
          * flow matches an output port that includes a logical port on a remote
-         * hypervisor, and tunnels the packet to that hypervisor.
+         * hypervisor, and tunnels the packet or send through vlan network to
+         * that hypervisor.
          */
+
+        /* For each vlan network connected to the router, add that network's
+         * vlan tag to the packet and output it through localnet port */
+        struct local_datapath *ldp = get_local_datapath(local_datapaths,
+                                                        dp_key);
+        for (int i = 0; i < ldp->n_peer_dps; i++) {
+            struct ofpact_vlan_vid *vlan_vid;
+            ofp_port_t port_ofport = 0;
+            struct peer_datapath *pdp = ldp->peer_dps[i];
+            struct local_datapath *peer_ldp = get_local_datapath(
+                local_datapaths, pdp->peer_dp->tunnel_key);
+            ovs_assert(peer_ldp);
+            if (peer_ldp->localnet_port && pdp->patch->tunnel_key) {
+                int64_t vlan_tag = (peer_ldp->localnet_port->n_tag ?
+                                    *peer_ldp->localnet_port->tag : 0);
+                if (!vlan_tag) {
+                    continue;
+                }
+                port_ofport = u16_to_ofp(simap_get(&localvif_to_ofport,
+                    peer_ldp->localnet_port->logical_port));
+                if (!port_ofport) {
+                    continue;
+                }
+
+                match_init_catchall(&match);
+                ofpbuf_clear(ofpacts_p);
+
+                match_set_metadata(&match, htonll(dp_key));
+                match_set_reg_masked(&match, MFF_LOG_FLAGS - MFF_REG0,
+                                     MLF_RCV_FROM_VLAN, MLF_RCV_FROM_VLAN);
+                match_set_reg(&match, MFF_LOG_INPORT - MFF_REG0,
+                              pdp->patch->tunnel_key);
+                match_set_reg(&match, MFF_LOG_OUTPORT - MFF_REG0, port_key);
+
+                vlan_vid = ofpact_put_SET_VLAN_VID(ofpacts_p);
+                vlan_vid->vlan_vid = vlan_tag;
+                vlan_vid->push_vlan_if_needed = true;
+                ofpact_put_OUTPUT(ofpacts_p)->port = port_ofport;
+                ofpact_put_STRIP_VLAN(ofpacts_p);
+
+                ofctrl_add_flow(flow_table, OFTABLE_REMOTE_OUTPUT, 150, 0,
+                                &match, ofpacts_p);
+            }
+        }
+
         match_init_catchall(&match);
         ofpbuf_clear(ofpacts_p);
 

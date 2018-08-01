@@ -40,6 +40,17 @@ struct ct_zone_pending_entry {
     enum ct_zone_pending_state state;
 };
 
+/* Represents a peer datapath connected to a given datapath */
+struct peer_datapath {
+    const struct sbrec_datapath_binding *peer_dp;
+
+    /* Patch port connected to local datapath */
+    const struct sbrec_port_binding *patch;
+
+    /* Peer patch port connected to peer datapath */
+    const struct sbrec_port_binding *peer;
+};
+
 /* A logical datapath that has some relevance to this hypervisor.  A logical
  * datapath D is relevant to hypervisor H if:
  *
@@ -56,10 +67,14 @@ struct local_datapath {
     /* The localnet port in this datapath, if any (at most one is allowed). */
     const struct sbrec_port_binding *localnet_port;
 
+    /* The chassisredirect port in this datapath, if any
+     * (at most one is allowed). */
+    const struct sbrec_port_binding *chassisredirect_port;
+
     /* True if this datapath contains an l3gateway port located on this
      * hypervisor. */
     bool has_local_l3gateway;
-    const struct sbrec_datapath_binding **peer_dps;
+    struct peer_datapath **peer_dps;
     size_t n_peer_dps;
 };
 

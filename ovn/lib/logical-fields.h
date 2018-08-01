@@ -50,6 +50,7 @@ enum mff_log_flags_bits {
     MLF_FORCE_SNAT_FOR_DNAT_BIT = 2,
     MLF_FORCE_SNAT_FOR_LB_BIT = 3,
     MLF_LOCAL_ONLY_BIT = 4,
+    MLF_RCV_FROM_VLAN_BIT = 5,
 };
 
 /* MFF_LOG_FLAGS_REG flag assignments */
@@ -75,6 +76,7 @@ enum mff_log_flags {
      * hypervisors should instead only be output to local targets
      */
     MLF_LOCAL_ONLY = (1 << MLF_LOCAL_ONLY_BIT),
+    MLF_RCV_FROM_VLAN = (1 << MLF_RCV_FROM_VLAN_BIT),
 };
 
 #endif /* ovn/lib/logical-fields.h */

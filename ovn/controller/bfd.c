@@ -139,8 +139,9 @@ bfd_travel_gw_related_chassis(
     LIST_FOR_EACH_POP (dp_binding, node, &dp_list) {
         dp = dp_binding->dp;
         free(dp_binding);
+        const struct sbrec_datapath_binding *pdp;
         for (size_t i = 0; i < dp->n_peer_dps; i++) {
-            const struct sbrec_datapath_binding *pdp = dp->peer_dps[i];
+            pdp = dp->peer_dps[i]->peer_dp;
             if (!pdp) {
                 continue;
             }
