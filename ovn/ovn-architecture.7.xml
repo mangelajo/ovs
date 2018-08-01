@@ -874,6 +874,19 @@
         Encapsulations</code> for encoding details).  Then the actions resubmit
         to table 33 to enter the logical egress pipeline.
       </p>
+
+      <p>
+        For VLAN packets coming through localnet port from remote chassis,
+        table 0 sets logical datapath and logical ingress port based on
+        localnet port. If these VLAN packets have distributed gateway port MAC
+        (gateway port on a distributed logical router where one of the logical
+        router ports specifies a redirect-chassis) as destination MAC address,
+        a new flow with priority 200 is added which sets logical datapath to
+        router metadata and logical ingress port to the patch port connecting
+        router and vlan network, resubmit into the logical router ingress
+        pipeline i.e table 8. This flow is only programmed  on the gateway
+        port instance on the redirect-chassis.
+      </p>
     </li>
 
     <li>
@@ -1020,6 +1033,16 @@
           determine the output port.
         </li>
         <li>
+          A higher-priority rule to match packets received from router ports
+          which are connected to vlan networks, based on flag
+          MLF_RCV_FROM_VLAN, where logical output port is a gateway port, on
+          a distributed logical router (where one of the logical router ports
+          specifies a redirect-chassis), but on remote hypervisor, the actions
+          tag the packet with input network VLAN id and output the packet
+          through input VLAN switch's localnet port. This flow is programmed
+          on chassis other than redirect-chassis.
+        </li>
+        <li>
           A higher-priority rule to match packets received from ports of type
           <code>localport</code>, based on the logical input port, and resubmit
           these packets to table 33 for local delivery.  Ports of type
@@ -1153,7 +1176,8 @@
       directly to the first OpenFlow flow table in the ingress pipeline,
       setting the logical ingress port to the peer logical patch port, and
       using the peer logical patch port's logical datapath (that
-      represents the logical router).
+      represents the logical router). If the logical datapath is a VLAN
+      network, set the MLF_RCV_FROM_VLAN flag.
     </li>
   </ul>
 

@@ -995,6 +995,23 @@ output;
 
       <li>
         <p>
+          For each enabled router port <var>P</var> which is connected to
+          a VLAN network, a priority-100 flow that matches <code>inport ==
+          <var>P</var> &amp;&amp; flags.rcv_from_vlan == 1</code>,
+          with action <code>next;</code>.
+        </p>
+
+        <p>
+          For the gateway port on a distributed logical router (where
+          one of the logical router ports specifies a
+          <code>redirect-chassis</code>), the above flow is only
+          programmed on the gateway port instance on the
+          <code>redirect-chassis</code>.
+        </p>
+      </li>
+
+      <li>
+        <p>
           For each enabled router port <var>P</var> with Ethernet address
           <var>E</var>, a priority-50 flow that matches <code>inport ==
           <var>P</var> &amp;&amp; (eth.mcast || eth.dst ==
@@ -1142,6 +1159,18 @@ outport = <var>P</var>;
 flags.loopback = 1;
 output;
         </pre>
+
+        <p>
+          For the gateway port on a distributed logical router (where
+          one of the logical router ports specifies a
+          <code>redirect-chassis</code>), when the ARP request is
+          from router internal ports connected to vlan network (i.e
+          flags.rcv_from_vlan == 1), a priority-90 flow matches
+          <code> flags.rcv_from_vlan == 1 &amp;&amp; arp.op == 1
+          &amp;&amp; arp.tpa == <var>A</var></code> will have the
+          above action but outport set to all router internal ports
+          which are connected to vlan network.
+        </p>
 
         <p>
           For the gateway port on a distributed logical router (where
@@ -1838,6 +1867,23 @@ next;
         <p>
           If the address <var>A</var> is in the link-local scope, the
           route will be limited to sending on the ingress port.
+        </p>
+
+        <p>
+          If the route's <code>outport</code> is a gateway port on a
+          distributed logical router (where one of the logical router ports
+          specifies a <code>redirect-chassis</code>), for the packets matching
+          MLF_RCV_FROM_VLAN flag along with <code>ip4.dst ==
+          <var>N</var>/<var>M</var></code>, or <code>ip6.dst ==
+          <var>N</var>/<var>M</var></code>, add a flow with priority we get
+          by adding 1 to number of 1-bits in M, with an action
+          REGBIT_NAT_REDIRECT  =  1;  next;.
+          By setting the <code>REGBIT_NAT_REDIRECT</code> flag, in the ingress
+          table <code>Gateway Redirect</code> this will trigger a redirect to
+          the instance of the gateway port on the <code>redict-chassis</code>.
+          This flow is programmed on the gateway port instance other than the
+          <code>redirect-chassis</code>. This flow is also added if the route
+          is from a configured static route.
         </p>
       </li>
     </ul>
