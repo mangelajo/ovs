@@ -8030,6 +8030,12 @@ foo_mac="000001010203"
 gw_mac="000002010203"
 nexthop_mac="f00000010204"
 
+# gARP for distributed port has to be sent through router internal patch port
+# which is connected to vlan network
+garp=ffffffffffff${gw_mac}8100000208060001080006040001${gw_mac}${gw_ip}000000000000${gw_ip}
+echo $garp >> hv1-br-ex_n2-rx.expected
+OVN_CHECK_PACKETS([hv1/br-ex_n2-rx.pcap], [hv1-br-ex_n2-rx.expected])
+
 # Send ip packet from foo1 to 8.8.8.8
 src_mac="f00000010203"
 dst_mac="000001010203"

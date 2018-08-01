@@ -2205,8 +2205,47 @@ get_nat_addresses_and_keys(struct ovsdb_idl_index *sbrec_chassis_by_name,
                            struct sset *local_l3gw_ports,
                            const struct sbrec_chassis *chassis,
                            const struct sset *active_tunnels,
-                           struct shash *nat_addresses)
+                           struct shash *nat_addresses,
+                           const struct hmap *local_datapaths)
 {
+    /* When a router has tenant vlan networks, gARP for distributed gateway
+     * router port has to be sent through internal tenant vlan network's
+     * localnet port, so that external switches can learn this MAC and forward
+     * tenant vlan network traffic with distributed gateway router port MAC
+     * as destination MAC address */
+
+    struct local_datapath *ldp;
+    struct shash router_vlan_ports;
+
+    shash_init(&router_vlan_ports);
+    HMAP_FOR_EACH (ldp, hmap_node, local_datapaths) {
+        const struct sbrec_port_binding *crp;
+        crp = ldp->chassisredirect_port;
+        /* check if it a router with chassis redirect port,
+         * get corresponding distributed port */
+        if (crp && crp->chassis &&
+            !strcmp(crp->chassis->name, chassis->name)) {
+            const struct sbrec_port_binding *dp = NULL;
+            for (int i = 0; i < ldp->n_peer_dps; i++) {
+                if (!strcmp(ldp->peer_dps[i]->patch->logical_port,
+                            smap_get(&crp->options, "distributed-port"))) {
+                    dp = ldp->peer_dps[i]->peer;
+                    break;
+                }
+            }
+
+            /* Save router internal port (patch port on tenant vlan network)
+             * along with distributed port. */
+            for (int i = 0; i < ldp->n_peer_dps; i++) {
+                if (strcmp(ldp->peer_dps[i]->patch->logical_port,
+                           smap_get(&crp->options, "distributed-port"))) {
+                    shash_add(&router_vlan_ports,
+                              ldp->peer_dps[i]->peer->logical_port, dp);
+                }
+            }
+        }
+    }
+
     const char *gw_port;
     SSET_FOR_EACH(gw_port, local_l3gw_ports) {
         const struct sbrec_port_binding *pb;
@@ -2216,11 +2255,16 @@ get_nat_addresses_and_keys(struct ovsdb_idl_index *sbrec_chassis_by_name,
             continue;
         }
 
-        if (pb->n_nat_addresses) {
-            for (int i = 0; i < pb->n_nat_addresses; i++) {
+        /* Router internal ports should send gARP for distributed port
+         * NAT addresses */
+        const struct sbrec_port_binding *dp;
+        dp = shash_find_data(&router_vlan_ports, pb->logical_port);
+        const struct sbrec_port_binding *nat_port = dp ? dp : pb;
+        if (nat_port->n_nat_addresses) {
+            for (int i = 0; i < nat_port->n_nat_addresses; i++) {
                 consider_nat_address(sbrec_chassis_by_name,
                                      sbrec_port_binding_by_name,
-                                     pb->nat_addresses[i], pb,
+                                     nat_port->nat_addresses[i], pb,
                                      nat_address_keys, chassis,
                                      active_tunnels,
                                      nat_addresses);
@@ -2228,7 +2272,7 @@ get_nat_addresses_and_keys(struct ovsdb_idl_index *sbrec_chassis_by_name,
         } else {
             /* Continue to support options:nat-addresses for version
              * upgrade. */
-            const char *nat_addresses_options = smap_get(&pb->options,
+            const char *nat_addresses_options = smap_get(&nat_port->options,
                                                          "nat-addresses");
             if (nat_addresses_options) {
                 consider_nat_address(sbrec_chassis_by_name,
@@ -2240,6 +2284,7 @@ get_nat_addresses_and_keys(struct ovsdb_idl_index *sbrec_chassis_by_name,
             }
         }
     }
+    shash_destroy(&router_vlan_ports);
 }
 
 static void
@@ -2275,7 +2320,7 @@ send_garp_run(struct ovsdb_idl_index *sbrec_chassis_by_name,
                                sbrec_port_binding_by_name,
                                &nat_ip_keys, &local_l3gw_ports,
                                chassis, active_tunnels,
-                               &nat_addresses);
+                               &nat_addresses, local_datapaths);
     /* For deleted ports and deleted nat ips, remove from send_garp_data. */
     struct shash_node *iter, *next;
     SHASH_FOR_EACH_SAFE (iter, next, &send_garp_data) {

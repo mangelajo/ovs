@@ -5251,6 +5251,63 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
                           ds_cstr(&match), ds_cstr(&actions));
         }
 
+        /* ARP requests for distributed port IP address but coming from router
+         * internal network vlan, should be replied through router internal
+         * network vlan ports */
+        if (op->od->l3dgw_port && (op == op->od->l3dgw_port)
+            && op->od->l3redirect_port) {
+            for (int i = 0; i < op->lrp_networks.n_ipv4_addrs; i++) {
+                ds_clear(&match);
+                ds_put_format(&match,
+                              "flags.rcv_from_vlan == 1 && "
+                              "arp.tpa == %s && arp.op == 1 && "
+                              "is_chassis_resident(%s)",
+                               op->lrp_networks.ipv4_addrs[i].addr_s,
+                               op->od->l3redirect_port->json_key);
+
+                ds_clear(&actions);
+                ds_put_format(&actions,
+                    "eth.dst = eth.src; "
+                    "eth.src = %s; "
+                    "arp.op = 2; /* ARP reply */ "
+                    "arp.tha = arp.sha; "
+                    "arp.sha = %s; "
+                    "arp.tpa = arp.spa; "
+                    "arp.spa = %s; "
+                    "flags.loopback = 1; ",
+                    op->lrp_networks.ea_s,
+                    op->lrp_networks.ea_s,
+                    op->lrp_networks.ipv4_addrs[i].addr_s);
+
+                /* Add internal vlan network ports as output ports */
+                bool router_ports_exist = false;
+                struct ovn_datapath *dp;
+                HMAP_FOR_EACH (dp, key_node, datapaths) {
+                    if (!dp->nbs) {
+                        continue;
+                    }
+                    if (!dp->localnet_port) {
+                        continue;
+                    }
+                    for (size_t j = 0; j < dp->n_router_ports; j++) {
+                        struct ovn_port *rp = dp->router_ports[j];
+                        if (rp->peer && rp->peer->od == op->od &&
+                            rp->peer != op) {
+                            router_ports_exist = true;
+                            ds_put_format(&actions,
+                                "outport = %s; "
+                                "output;",
+                                rp->peer->json_key);
+                        }
+                    }
+                }
+                if (router_ports_exist) {
+                    ovn_lflow_add(lflows, op->od, S_ROUTER_IN_IP_INPUT, 90,
+                        ds_cstr(&match), ds_cstr(&actions));
+                }
+            }
+        }
+
         /* A set to hold all load-balancer vips that need ARP responses. */
         struct sset all_ips = SSET_INITIALIZER(&all_ips);
         int addr_family;
